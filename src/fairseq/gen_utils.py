@@ -212,7 +212,7 @@ def gen_one(model, prime_nums, MAX_LEN = 4090, MIN_LEN = 0):
     global prime_mea_idx
     prime_mea_idx = 0
     prime = copy.deepcopy(prime_nums)
-    ins_list = [-1] 
+    ins_list = [-1]
 
     with torch.no_grad():
         memo = None

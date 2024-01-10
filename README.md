@@ -45,10 +45,10 @@ the `music_bpe_exec` file [`here`](src/musicBPE/README.md) by following the inst
 
 ### Step 4:
 - Run `python3 src/fairseq/make_data.py` to convert the `raw_corpus.txt` into binary file for fairseq and create `four
-vocabularies` mentioned in the paper. 
+vocabularies` mentioned in the paper.
 
 ### Step 5:
-- Run `sh train_linear_chord.sh` to train your own model!
+- Run `sh train_batch.sh` to train multiple models using different instrument loss scales.
 
 ## Generation pipeline
 - Put your checkpoint file or [download our pretrained model](https://drive.google.com/file/d/1xpkj_qN4MdLRkBdCXmfGjuWWjnTN1Og0/view?usp=sharing) into `ckpt/`

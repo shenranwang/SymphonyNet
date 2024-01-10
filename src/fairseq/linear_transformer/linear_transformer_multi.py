@@ -4,6 +4,11 @@ from fast_transformers.masking import TriangularCausalMask, LengthMask
 import logging, math
 import os
 import sys
+import json
+import time
+from datetime import datetime
+
+import matplotlib.pyplot as plt
 
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -33,13 +38,82 @@ from fairseq.data import (
 from fairseq.criterions import register_criterion
 from fairseq.criterions.cross_entropy import CrossEntropyCriterion
 
+print(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+from gen_utils import music_dict
+from src.encoding import bpe_str2int, ison, ispitch
+
+if torch.cuda.is_available():
+    print("CUDA available")
+else:
+    print("CUDA not available")
 
 
 logger = logging.getLogger(__name__)
 
 
+MAX_POS_LEN = 4096
+PI_LEVEL = 2
+IGNORE_META_LOSS = 1
+
+BPE = "_bpe"
+# BPE = ""
+DATA_BIN=f"linear_{MAX_POS_LEN}_chord{BPE}_hardloss{IGNORE_META_LOSS}"
+DATA_VOC_DIR=f"data/model_spec/{DATA_BIN}/vocabs/"
+music_dict.load_vocabs_bpe(DATA_VOC_DIR, 'data/bpe_res/' if BPE == '_bpe' else None)
+
+instrument_ranges = json.load(open("midi_pitch_ranges.json", "r"))
+instrument_ranges = list(instrument_ranges.values())
+
 DEFAULT_MAX_TARGET_POSITIONS = 1024
 # INF = 2147483647
+
+
+def mask_instr_range():
+    # TODO: Implement proper logging and plotting for losses, and possibly try plotting the event-instrument matrix
+    mask = torch.ones((2,1125,133), device='cuda')
+    mask[:,:4,:] = 0  # special tokens
+    mask[:,:,:4] = 0  # special tokens
+    for i in range(len(instrument_ranges)):
+        low, high = instrument_ranges[i]
+        low, high = music_dict.str2int[low], music_dict.str2int[high]
+        # print(instrument_ranges[i], low, high)
+        mask[:,low:high,i+4] = 0  # note tokens
+        for k in music_dict.vocabs[0]:
+            tok = music_dict.vocabs[0][k]
+            if ison(tok):
+                notes = bpe_str2int(tok)
+                if notes[0] == 1:  # bpe token
+                    f, l = notes[1], notes[-1]
+                    if low <= f and high >= l:
+                        mask[:,int(k),i+4] = 0
+            if not ispitch(tok) and not ison(tok):  # non pitch or bpe tokens, must not be counted in loss
+                mask[:,int(k),i+4] = 0
+    mask[:,:,-1] = 0  # extra instr token
+    return mask
+    
+
+def check_mask_instr_range(mask):
+    for i in range(2):
+        sample = mask[i]
+        assert torch.all(sample[:4, :] == 0)
+        assert torch.all(sample[:, :4] == 0)
+        for k in music_dict.vocabs[0]:
+            tok = music_dict.vocabs[0][k]
+            if not ison(tok) and not ispitch(tok):
+                # print(k, int(k), tok, "non pitch or bpe token")
+                # print(sample[int(k), :])
+                assert torch.all(sample[int(k), :] == 0)
+        # for evt in range(1125):
+        #     for instr in range(133):
+        #         if ispitch(tok)
+
+
+mask_instr = mask_instr_range()
+check_mask_instr_range(mask_instr)
+print(mask_instr.shape)
+
 
 @register_criterion("multiple_loss")
 class MultiplelossCriterion(CrossEntropyCriterion):
@@ -52,22 +126,40 @@ class MultiplelossCriterion(CrossEntropyCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample["net_input"])
+        evt_instr_matrix = torch.einsum('bji,bjk->bik', net_output[0], net_output[3])  # shape [2, 1125, 133]
+        evt_instr_matrix = utils.softmax(evt_instr_matrix, dim=-1)
+        evt_instr_matrix = torch.mul(evt_instr_matrix, mask_instr)
         losses = self.compute_loss(model, net_output, sample, reduce=reduce) # return a list
+        # TODO: need to test weighting --> loss + b * instrument_loss
+        instr_loss_scaling = os.environ['INSTR_LOSS_SCALING']
+        if not hasattr(self,"last_print_matrix") or (time.time() - self.last_print_matrix) > 30 * 60:
+            self.last_print_matrix = time.time()
+            # fig, ax = plt.subplots(figsize=(12, 6))
+            # cax = ax.imshow((100000000 * torch.mean(evt_instr_matrix.clone().detach(), dim=0)).cpu().numpy(), cmap='hot', aspect='equal')  # Plot log-scaled data with square aspect ratio
+            # fig.colorbar(cax)
+            fpath = f'ckpt/train_instrument_loss_add_{instr_loss_scaling}_bs128'
+            fn = f'evt_instr_matrix_{instr_loss_scaling}_{datetime.now().strftime("%d-%m-%y_%H-%M-%S")}'
+            torch.save(evt_instr_matrix, f'{fpath}/{fn}.pt')
+            # plt.savefig(f'{fpath}/{fn}.png', bbox_inches='tight')  # Saves the plot as a PNG file
+            # plt.close()  # Closes the plot window
+        instr_loss = torch.mean(evt_instr_matrix) * float(instr_loss_scaling) # 10e0
         assert not self.sentence_avg
-        #TODO: adjust weight of evt losses and other losses by length (current strategy: simple average the losses)
+        # TODO: adjust weight of evt losses and other losses by length (current strategy: simple average the losses)
         # weights = [sample["ntokens"]] + [sample["ontokens"]] * (len(losses) - 1)
-        loss = torch.mean(torch.stack(losses))
+        loss = torch.mean(torch.stack(losses)) + instr_loss
         logging_output = {
             "loss": loss.data,
             "evt_loss": losses[0].data,
             "dur_loss": losses[1].data,
             "trk_loss": losses[2].data,
             "ins_loss": losses[3].data,
+            "instr_loss": instr_loss,
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample["ntokens"],
             "on_sample_size": sample["ntokens"],
         }
+        del evt_instr_matrix
         return loss, sample["ntokens"], logging_output
 
     def compute_loss(self, model, net_output, sample, reduce=True):
@@ -76,7 +168,6 @@ class MultiplelossCriterion(CrossEntropyCriterion):
         for idx, lprobs in enumerate(lprobs_tuple):
             lprobs = lprobs.view(-1, lprobs.size(-1))
             target = model.get_targets(sample, net_output)[..., idx].view(-1)
-
             loss = F.nll_loss(
                 lprobs,
                 target,
@@ -94,6 +185,7 @@ class MultiplelossCriterion(CrossEntropyCriterion):
         loss_dur = sum(log.get("dur_loss", 0) for log in logging_outputs)
         loss_trk = sum(log.get("trk_loss", 0) for log in logging_outputs)
         loss_ins = sum(log.get("ins_loss", 0) for log in logging_outputs)
+        loss_instr = sum(log.get("instr_loss", 0) for log in logging_outputs)
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         on_sample_size = sum(log.get("on_sample_size", 0) for log in logging_outputs)
@@ -114,6 +206,9 @@ class MultiplelossCriterion(CrossEntropyCriterion):
         )
         metrics.log_scalar(
             "ins_loss", loss_ins / on_sample_size / math.log(2), on_sample_size, round=3
+        )
+        metrics.log_scalar(
+            "instr_loss", loss_instr / on_sample_size / math.log(2), on_sample_size, round=10
         )
 
         if sample_size != ntokens:
@@ -258,7 +353,7 @@ class LinearTransformerMultiHeadDecoder(FairseqDecoder):
         dur_logits = self.proj_dur(features)
         trk_logits = self.proj_trk(features)
         ins_logits = self.proj_ins(features)
-
+        # print("logits", evt_logits.shape, dur_logits.shape, trk_logits.shape, ins_logits.shape)
         return (evt_logits, dur_logits, trk_logits, ins_logits)
 
     def extract_features(
