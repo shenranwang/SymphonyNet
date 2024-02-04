@@ -256,6 +256,7 @@ def get_trk_ins_map(prime, ins_list):
     trk_ins_map = {}
     for k in track_map:
         v = torch.stack(track_map[k])
+        print(k, v.shape, v)
         logits = torch.mean(v, axis=0)
         ins_word = sampling(logits,p=0.9)
         trk_ins_map[k] = ins_word

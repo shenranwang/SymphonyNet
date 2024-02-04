@@ -428,8 +428,10 @@ def midi_to_event_seq_str(midi_file_path, readonly=False):
         split_score[measure_idx].insert(1, chord_evt)
 
     new_event_seq = get_pos_and_cc(split_score)
+    print(new_event_seq)
 
     char_events = event_seq_to_str(new_event_seq)
+    print(char_events)
 
     return char_events
 
@@ -510,4 +512,6 @@ if __name__ == '__main__':
                 file_paths.append(file_path)
 
     # run multi-processing midi extractor
-    mp_handler(file_paths)
+    # mp_handler(file_paths)
+    file_path = file_paths[0]
+    event_seq = midi_to_event_seq_str(file_path)

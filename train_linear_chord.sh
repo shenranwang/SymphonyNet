@@ -27,13 +27,18 @@ CHECKPOINT_SUFFIX=${DATA_BIN}_PI${PI_LEVEL}  # for different experiments add suf
 
 # Batch arguments
 instr_loss_scaling=$1
+epoch=$2
 
 
-# --restore-file ckpt/${FOLD}/checkpoint_last_${CHECKPOINT_SUFFIX}.pt
-# checkpoint48_linear_4096_chord_bpe_hardloss1_PI2
-FOLD="train_instrument_loss_add_${instr_loss_scaling}_bs128"
 
-PYTHONWARNINGS="ignore" INSTR_LOSS_SCALING=$instr_loss_scaling fairseq-train 	${DATA_BIN_DIR} \
+FOLD="scratch_instrument_loss_add_${instr_loss_scaling}_bs128"
+EPOCHD=$epoch
+
+# EVENT INSTRUMENT MATRIX
+# --save-dir ckpt/${FOLD}/tempcp${EPOCHD} --restore-file ckpt/${FOLD}/checkpoint${EPOCHD}_${CHECKPOINT_SUFFIX}.pt
+# --cpu --train-subset valid --reset-dataloader
+
+PYTHONWARNINGS="ignore" EPOCH_MODEL=$epoch INSTR_LOSS_SCALING=$instr_loss_scaling fairseq-train 	${DATA_BIN_DIR} \
 	--seed ${SEED} \
 	--user-dir src/fairseq/linear_transformer \
 	--task symphony_modeling --criterion multiple_loss \

@@ -72,7 +72,7 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 
 def mask_instr_range():
     # TODO: Implement proper logging and plotting for losses, and possibly try plotting the event-instrument matrix
-    mask = torch.ones((2,1125,133), device='cuda')
+    mask = torch.ones((2,1125,133), device='cuda')  #  if torch.cuda.is_available() else 'cpu'
     mask[:,:4,:] = 0  # special tokens
     mask[:,:,:4] = 0  # special tokens
     for i in range(len(instrument_ranges)):
@@ -112,6 +112,7 @@ def check_mask_instr_range(mask):
 
 mask_instr = mask_instr_range()
 check_mask_instr_range(mask_instr)
+torch.save(mask_instr, "evt_instr_matrix.pt")
 print(mask_instr.shape)
 
 
@@ -127,26 +128,24 @@ class MultiplelossCriterion(CrossEntropyCriterion):
         """
         net_output = model(**sample["net_input"])
         evt_instr_matrix = torch.einsum('bji,bjk->bik', net_output[0], net_output[3])  # shape [2, 1125, 133]
+        # print("ASDSD", evt_instr_matrix.shape)
         evt_instr_matrix = utils.softmax(evt_instr_matrix, dim=-1)
+        # print(evt_instr_matrix.shape)
         evt_instr_matrix = torch.mul(evt_instr_matrix, mask_instr)
+        # print(evt_instr_matrix.shape)
+        # print(evt_instr_matrix[0])
         losses = self.compute_loss(model, net_output, sample, reduce=reduce) # return a list
         # TODO: need to test weighting --> loss + b * instrument_loss
         instr_loss_scaling = os.environ['INSTR_LOSS_SCALING']
-        if not hasattr(self,"last_print_matrix") or (time.time() - self.last_print_matrix) > 30 * 60:
-            self.last_print_matrix = time.time()
-            # fig, ax = plt.subplots(figsize=(12, 6))
-            # cax = ax.imshow((100000000 * torch.mean(evt_instr_matrix.clone().detach(), dim=0)).cpu().numpy(), cmap='hot', aspect='equal')  # Plot log-scaled data with square aspect ratio
-            # fig.colorbar(cax)
-            fpath = f'ckpt/train_instrument_loss_add_{instr_loss_scaling}_bs128'
-            fn = f'evt_instr_matrix_{instr_loss_scaling}_{datetime.now().strftime("%d-%m-%y_%H-%M-%S")}'
-            torch.save(evt_instr_matrix, f'{fpath}/{fn}.pt')
-            # plt.savefig(f'{fpath}/{fn}.png', bbox_inches='tight')  # Saves the plot as a PNG file
-            # plt.close()  # Closes the plot window
-        instr_loss = torch.mean(evt_instr_matrix) * float(instr_loss_scaling) # 10e0
+        # epoch_model = os.environ['EPOCH_MODEL']
+        # fpath = f'ckpt/train_instrument_loss_add_{instr_loss_scaling}_bs128/epoch{epoch_model}'
+        # fn = f'evt_instr_matrix_{instr_loss_scaling}_{datetime.now().strftime("%d-%m-%y_%H-%M-%S")}'
+        # torch.save(evt_instr_matrix, f'{fpath}/{fn}.pt')
+        instr_loss = torch.mean(evt_instr_matrix) * float(instr_loss_scaling)
         assert not self.sentence_avg
         # TODO: adjust weight of evt losses and other losses by length (current strategy: simple average the losses)
         # weights = [sample["ntokens"]] + [sample["ontokens"]] * (len(losses) - 1)
-        loss = torch.mean(torch.stack(losses)) + instr_loss
+        loss = (torch.mean(torch.stack(losses)) * 4 + instr_loss) / 5
         logging_output = {
             "loss": loss.data,
             "evt_loss": losses[0].data,
